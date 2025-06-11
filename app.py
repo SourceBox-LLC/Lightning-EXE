@@ -16,6 +16,9 @@ class LightningEXE:
         self.root.title("Lightning EXE")
         self.root.geometry("700x600")
         
+        # Initialize environment variables list
+        self.env_vars = []  # List to store environment variables as (key, value) tuples
+        
         # Define color scheme
         self.bg_color = "#1e1e2e"  # Dark blue-purple background
         self.accent_color = "#cba6f7"  # Light purple accent
@@ -177,6 +180,10 @@ class LightningEXE:
         options_frame = ttk.Frame(main_notebook, padding=15)
         main_notebook.add(options_frame, text=" Build Options ")
         
+        # ===== ENVIRONMENT VARIABLES SECTION =====
+        env_vars_frame = ttk.Frame(main_notebook, padding=15)
+        main_notebook.add(env_vars_frame, text=" Environment Variables ")
+        
         # Output directory
         output_dir_frame = ttk.LabelFrame(options_frame, text="Output Location", padding=10)
         output_dir_frame.pack(fill=tk.X, pady=(5, 15))
@@ -221,6 +228,67 @@ class LightningEXE:
         
         console_info = ttk.Label(console_frame, text="(Shows command output, useful for debugging)")
         console_info.pack(side=tk.LEFT, padx=10)
+        
+        # Environment Variables
+        env_vars_label = ttk.Label(env_vars_frame, 
+                                text="Add environment variables that will be included in the executable:", 
+                                font=("Segoe UI", 10))
+        env_vars_label.pack(anchor=tk.W, pady=(0, 10))
+        
+        env_hint = ttk.Label(env_vars_frame, 
+                           text="These variables will be available to your application at runtime, similar to .env files.",
+                           foreground=self.accent2_color, font=("Segoe UI", 9))
+        env_hint.pack(anchor=tk.W, pady=(0, 15))
+        
+        # Frame for adding new variables
+        add_var_frame = ttk.Frame(env_vars_frame)
+        add_var_frame.pack(fill=tk.X, pady=10)
+        
+        ttk.Label(add_var_frame, text="Variable Name:").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
+        self.new_var_key = tk.StringVar()
+        key_entry = ttk.Entry(add_var_frame, textvariable=self.new_var_key, width=20)
+        key_entry.grid(row=0, column=1, padx=5, pady=5, sticky=tk.W)
+        
+        ttk.Label(add_var_frame, text="Value:").grid(row=0, column=2, padx=5, pady=5, sticky=tk.W)
+        self.new_var_value = tk.StringVar()
+        value_entry = ttk.Entry(add_var_frame, textvariable=self.new_var_value, width=40)
+        value_entry.grid(row=0, column=3, padx=5, pady=5, sticky=tk.EW)
+        
+        add_btn = ttk.Button(add_var_frame, text="Add", command=self.add_env_var, width=10)
+        add_btn.grid(row=0, column=4, padx=5, pady=5)
+        
+        # Frame for listing variables
+        list_frame = ttk.LabelFrame(env_vars_frame, text="Defined Variables", padding=10)
+        list_frame.pack(fill=tk.BOTH, expand=True, pady=10)
+        
+        # Create a frame with a scrollbar for the variables list
+        var_scroll_frame = ttk.Frame(list_frame)
+        var_scroll_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Add scrollbar
+        scrollbar = ttk.Scrollbar(var_scroll_frame)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Create a canvas for scrolling
+        self.env_canvas = tk.Canvas(var_scroll_frame, bg=self.bg_color, highlightthickness=0)
+        self.env_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        # Configure the scrollbar
+        scrollbar.config(command=self.env_canvas.yview)
+        self.env_canvas.config(yscrollcommand=scrollbar.set)
+        
+        # Create a frame inside the canvas to hold the variables
+        self.env_list_frame = ttk.Frame(self.env_canvas)
+        self.env_canvas_window = self.env_canvas.create_window((0, 0), window=self.env_list_frame, anchor=tk.NW)
+        
+        # Configure the canvas to resize with the frame
+        self.env_list_frame.bind('<Configure>', lambda e: self.env_canvas.configure(scrollregion=self.env_canvas.bbox('all')))
+        self.env_canvas.bind('<Configure>', self._resize_env_canvas)
+        
+        # Empty state label
+        self.empty_env_label = ttk.Label(self.env_list_frame, text="No environment variables defined", 
+                                     foreground=self.accent2_color, font=("Segoe UI", 10, "italic"))
+        self.empty_env_label.pack(pady=20)
         
         # Build section
         build_frame = ttk.Frame(container, padding=(0, 10))
@@ -529,69 +597,350 @@ class LightningEXE:
             self.update_status(f"Found PyInstaller version: {version_check.stdout.strip()}")
         except (subprocess.SubprocessError, FileNotFoundError):
             # If PyInstaller is not installed or the check fails, try to install it
-            self.update_status("Installing PyInstaller...")
+            self.update_status("Installing PyInstaller...", "info")
             try:
-                install_result = subprocess.run(
-                    [sys.executable, "-m", "pip", "install", "pyinstaller"],
-                    capture_output=True,
-                    text=True,
-                    timeout=60
-                )
-                if install_result.returncode != 0:
-                    error_msg = install_result.stderr or "Unknown error during installation"
-                    raise Exception(f"Failed to install PyInstaller: {error_msg}")
-            except subprocess.TimeoutExpired:
-                raise Exception("PyInstaller installation timed out. Please install it manually: pip install pyinstaller")
-            except Exception as e:
-                raise Exception(f"Failed to install PyInstaller: {str(e)}")
+                subprocess.run([sys.executable, "-m", "pip", "install", "pyinstaller"], check=True)
+            except subprocess.CalledProcessError:
+                raise Exception("Failed to install PyInstaller")
         
         # Prepare PyInstaller command
-        self.update_status("Configuring PyInstaller...")
         cmd = [
             sys.executable, "-m", "PyInstaller",
             "--distpath", output_dir,
-            "--workpath", os.path.join(output_dir, "build")
+            "--workpath", os.path.join(output_dir, "build"),
+            "--specpath", output_dir
         ]
         
-        # Add options
+        # Add onefile/onedir option
         if self.onefile_var.get():
             cmd.append("--onefile")
         else:
             cmd.append("--onedir")
         
+        # Add console/no-console option
         if not self.console_var.get():
-            cmd.append("--noconsole")
+            cmd.append("--windowed")
         
-        # Add the source file
+        # Add environment variables if defined
+        if self.env_vars:
+            env_vars_str = "{" + ", ".join([f"'{k}': '{v}'" for k, v in self.env_vars]) + "}"
+            cmd.extend(["--add-data", f"env_vars.py:."]) 
+            
+            # Create a temporary env_vars.py file with the environment variables
+            env_vars_dir = os.path.dirname(source_file)
+            env_vars_path = os.path.join(env_vars_dir, "env_vars.py")
+            
+            with open(env_vars_path, "w") as f:
+                f.write(f"# Environment variables for Lightning EXE\n")
+                f.write(f"# This file is automatically generated\n\n")
+                f.write(f"import os\n\n")
+                f.write(f"# Set environment variables\n")
+                f.write(f"_env_vars = {env_vars_str}\n\n")
+                f.write(f"def init_env_vars():\n")
+                f.write(f"    for key, value in _env_vars.items():\n")
+                f.write(f"        os.environ[key] = value\n\n")
+                f.write(f"# Initialize environment variables when imported\n")
+                f.write(f"init_env_vars()\n")
+            
+            # Create a hook for the application entry point to load environment variables
+            hook_dir = os.path.join(env_vars_dir, "hooks")
+            os.makedirs(hook_dir, exist_ok=True)
+            hook_path = os.path.join(hook_dir, "hook-env_vars.py")
+            
+            with open(hook_path, "w") as f:
+                f.write("# PyInstaller hook to ensure env_vars is imported\n")
+                f.write("from PyInstaller.utils.hooks import collect_data_files\n\n")
+                f.write("# Force env_vars module to be included\n")
+                f.write("hiddenimports = ['env_vars']\n")
+            
+            # Add hook path to PyInstaller command
+            cmd.extend(["--additional-hooks-dir", hook_dir])
+            
+            # Inject import into the source file or its directory
+            self.inject_env_vars_import(source_file)
+        
+        # Add source file
         cmd.append(source_file)
         
-        # Run PyInstaller
-        self.update_status("Running PyInstaller to build executable...")
+        # Execute PyInstaller
+        self.update_status("Running PyInstaller...", "info")
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)  # 5 minute timeout
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True
+            )
             
-            if result.returncode != 0:
-                error_message = result.stderr or "Unknown error"
-                raise Exception(f"PyInstaller failed: {error_message}")
+            # Set a timeout for the process
+            try:
+                stdout, _ = process.communicate(timeout=300)  # 5 minute timeout
                 
-            self.update_status("PyInstaller completed successfully!")
-        except subprocess.TimeoutExpired:
-            raise Exception("PyInstaller build process timed out. The build may be too complex or your system may be under heavy load.")
+                if process.returncode != 0:
+                    raise Exception(f"PyInstaller failed with exit code {process.returncode}\n{stdout}")
+                
+            except subprocess.TimeoutExpired:
+                process.kill()
+                raise Exception("PyInstaller process timed out after 5 minutes")
+                
+        except Exception as e:
+            raise Exception(f"Error running PyInstaller: {str(e)}")
+    
+    def update_status(self, message, status_type="info"):
+        """Update the status bar with message and appropriate styling
+            
+        Args:
+            message: The status message to display
+            status_type: One of 'info', 'success', 'warning', 'error'
+        """
+        def _update():
+            # Set message text
+            self.status_var.set(message)
+                
+            # Set appropriate icon and color based on status_type
+            status_icon = status_frame.winfo_children()[0]
+            if status_type == "info":
+                status_icon.configure(text="ℹ️", foreground=self.accent2_color)
+            elif status_type == "success":
+                status_icon.configure(text="✅", foreground=self.success_color)
+            elif status_type == "warning":
+                status_icon.configure(text="⚠️", foreground=self.highlight_color)
+            elif status_type == "error":
+                status_icon.configure(text="❌", foreground=self.highlight_color)
+        
+        # Schedule the update on the main thread
+        status_frame = self.progress.master.winfo_children()[1]
+        self.root.after(0, _update)
+    
+    def copy_directory(self, src, dst):
+        """Copy the contents of src directory to dst directory"""
+        for item in os.listdir(src):
+            s = os.path.join(src, item)
+            d = os.path.join(dst, item)
+            if os.path.isdir(s):
+                os.makedirs(d, exist_ok=True)
+                self.copy_directory(s, d)
+            else:
+                shutil.copy2(s, d)
+    
+    def download_github_repo(self, github_url, dest_dir):
+        """Clone a GitHub repository using git"""
+        try:
+            # Create a subdirectory for the repository
+            repo_dir = os.path.join(dest_dir, "repo")
+            
+            # Call the clone_github_repo function from pull_repo.py
+            clone_github_repo(github_url, repo_dir)
+                
+            return repo_dir
+        except Exception as e:
+            raise Exception(f"Error cloning GitHub repository: {str(e)}")
+    
+    def run_pyinstaller(self, source_file, output_dir):
+        """Run PyInstaller to create an executable"""
+        # Check if PyInstaller is already installed
+        try:
+            # Use proper capitalization for module name
+            subprocess.run([sys.executable, "-c", "import PyInstaller"], check=True, capture_output=True)
+        except subprocess.CalledProcessError:
+            # If not installed, install it
+            self.update_status("Installing PyInstaller...", "info")
+            try:
+                subprocess.run([sys.executable, "-m", "pip", "install", "pyinstaller"], check=True)
+            except subprocess.CalledProcessError:
+                raise Exception("Failed to install PyInstaller")
+        
+        # Prepare PyInstaller command
+        cmd = [
+            sys.executable, "-m", "PyInstaller",
+            "--distpath", output_dir,
+            "--workpath", os.path.join(output_dir, "build"),
+            "--specpath", output_dir
+        ]
+            
+        # Add onefile/onedir option
+        if self.onefile_var.get():
+            cmd.append("--onefile")
+        else:
+            cmd.append("--onedir")
+            
+        # Add console/no-console option
+        if not self.console_var.get():
+            cmd.append("--windowed")
+            
+        # Add environment variables if defined
+        if self.env_vars:
+            # Use OS-specific separator for --add-data
+            separator = ";" if sys.platform.startswith("win") else ":"
+            
+            # Create a temporary env_vars.py file with the environment variables
+            env_vars_dir = os.path.dirname(source_file)
+            env_vars_path = os.path.join(env_vars_dir, "env_vars.py")
+            
+            # Generate environment variables dictionary string
+            env_vars_str = "{" + ", ".join([f"'{k}': '{v}'" for k, v in self.env_vars]) + "}"
+            
+            with open(env_vars_path, "w") as f:
+                f.write(f"# Environment variables for Lightning EXE\n")
+                f.write(f"# This file is automatically generated\n\n")
+                f.write(f"import os\n\n")
+                f.write(f"# Set environment variables\n")
+                f.write(f"_env_vars = {env_vars_str}\n\n")
+                f.write(f"def init_env_vars():\n")
+                f.write(f"    for key, value in _env_vars.items():\n")
+                f.write(f"        os.environ[key] = value\n\n")
+                f.write(f"# Initialize environment variables when imported\n")
+                f.write(f"init_env_vars()\n")
+            
+            # Add the env_vars.py file to the PyInstaller command
+            cmd.extend(["--add-data", f"env_vars.py{separator}."]) 
+            
+            # Create a hook for the application entry point to load environment variables
+            hook_dir = os.path.join(env_vars_dir, "hooks")
+            os.makedirs(hook_dir, exist_ok=True)
+            hook_path = os.path.join(hook_dir, "hook-env_vars.py")
+                
+            with open(hook_path, "w") as f:
+                f.write("# PyInstaller hook to ensure env_vars is imported\n")
+                f.write("from PyInstaller.utils.hooks import collect_data_files\n\n")
+                f.write("# Force env_vars module to be included\n")
+                f.write("hiddenimports = ['env_vars']\n")
+                
+            # Add hook path to PyInstaller command
+            cmd.extend(["--additional-hooks-dir", hook_dir])
+                
+            # Inject import into the source file or its directory
+            self.inject_env_vars_import(source_file)
+        
+        # Add source file
+        cmd.append(source_file)
+        
+        # Execute PyInstaller
+        self.update_status("Running PyInstaller...", "info")
+        try:
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True
+            )
+                
+            # Set a timeout for the process
+            try:
+                stdout, _ = process.communicate(timeout=300)  # 5 minute timeout
+                    
+                if process.returncode != 0:
+                    raise Exception(f"PyInstaller failed with exit code {process.returncode}\n{stdout}")
+                    
+            except subprocess.TimeoutExpired:
+                process.kill()
+                raise Exception("PyInstaller process timed out after 5 minutes")
+                    
         except Exception as e:
             if "No module named 'PyInstaller'" in str(e):
                 raise Exception("PyInstaller is not installed correctly. Please install it manually: pip install pyinstaller")
-            raise
+            else:
+                raise Exception(f"Error running PyInstaller: {str(e)}")
+
+    def add_env_var(self):
+        """Add a new environment variable to the list"""
+        key = self.new_var_key.get().strip()
+        value = self.new_var_value.get().strip()
+            
+        if not key:
+            messagebox.showerror("Error", "Variable name cannot be empty")
+            return
+                
+        # Check if key already exists
+        for i, (k, _) in enumerate(self.env_vars):
+            if k == key:
+                # Update existing key
+                self.env_vars[i] = (key, value)
+                self.refresh_env_vars_list()
+                self.new_var_key.set("")
+                self.new_var_value.set("")
+                return
+            
+        # Add new key-value pair
+        self.env_vars.append((key, value))
+        self.refresh_env_vars_list()
+            
+        # Clear inputs
+        self.new_var_key.set("")
+        self.new_var_value.set("")
+    
+    def remove_env_var(self, key):
+        """Remove an environment variable from the list"""
+        self.env_vars = [(k, v) for k, v in self.env_vars if k != key]
+        self.refresh_env_vars_list()
+    
+    def refresh_env_vars_list(self):
+        """Refresh the displayed list of environment variables"""
+        # Clear all widgets in the list frame
+        for widget in self.env_list_frame.winfo_children():
+            widget.destroy()
+            
+        if not self.env_vars:
+            # Show empty state
+            self.empty_env_label = ttk.Label(self.env_list_frame, text="No environment variables defined", 
+                                        foreground=self.accent2_color, font=("Segoe UI", 10, "italic"))
+            self.empty_env_label.pack(pady=20)
+            return
+            
+        # Create a header row
+        header_frame = ttk.Frame(self.env_list_frame)
+        header_frame.pack(fill=tk.X, padx=5, pady=(5, 10))
+            
+        ttk.Label(header_frame, text="Variable", font=("Segoe UI", 10, "bold")).grid(row=0, column=0, padx=(5, 15))
+        ttk.Label(header_frame, text="Value", font=("Segoe UI", 10, "bold")).grid(row=0, column=1, padx=(5, 15))
+            
+        # Add a separator
+        sep = ttk.Separator(self.env_list_frame, orient="horizontal")
+        sep.pack(fill=tk.X, pady=5)
+            
+        # Add each environment variable
+        for key, value in self.env_vars:
+            var_frame = ttk.Frame(self.env_list_frame)
+            var_frame.pack(fill=tk.X, padx=5, pady=2)
+                
+            ttk.Label(var_frame, text=key).grid(row=0, column=0, padx=(5, 15), pady=5, sticky=tk.W)
+            ttk.Label(var_frame, text=value).grid(row=0, column=1, padx=5, pady=5, sticky=tk.W)
+                
+            remove_btn = ttk.Button(var_frame, text="✕", width=3,
+                                  command=lambda k=key: self.remove_env_var(k))
+            remove_btn.grid(row=0, column=2, padx=5, pady=5, sticky=tk.E)
+    
+    def _resize_env_canvas(self, event):
+        """Resize the canvas width to fit the parent"""
+        canvas_width = event.width
+        self.env_canvas.itemconfig(self.env_canvas_window, width=canvas_width)
+    
+    def inject_env_vars_import(self, source_file):
+        """Inject the env_vars import into the source file or directory"""
+        # If the source file is within a directory, create an __init__.py file
+        dir_path = os.path.dirname(source_file)
+        init_file = os.path.join(dir_path, "__init__.py")
+            
+        # Check if __init__.py already exists
+        if not os.path.exists(init_file):
+            # Create a basic __init__.py file
+            with open(init_file, "w") as f:
+                f.write("# __init__.py for Lightning EXE environment variables\n")
+                f.write("try:\n")
+                f.write("    import env_vars\n")
+                f.write("except ImportError:\n")
+                f.write("    pass\n")
+
 
 if __name__ == "__main__":
     import sys
-    
+        
     # Check Python version
     if sys.version_info < (3, 6):
-        print("Python 3.6 or higher is required!")
+        print("Python 3.6 or higher is required")
         sys.exit(1)
-    
-    # Make sure we have the sys module available globally
-    # since it's needed by run_pyinstaller
+        
+    # Create and run the application
     root = tk.Tk()
     app = LightningEXE(root)
     
