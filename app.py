@@ -3,6 +3,7 @@ from tkinter import ttk, filedialog, messagebox
 import os
 import threading
 import subprocess
+import cmd_args_helper
 import tempfile
 import shutil
 import requests
@@ -18,6 +19,12 @@ class LightningEXE:
         
         # Initialize environment variables list
         self.env_vars = []  # List to store environment variables as (key, value) tuples
+        
+        # Initialize command line arguments
+        self.cmd_args_var = tk.StringVar()
+        
+        # Initialize extra packages
+        self.extra_packages_var = tk.StringVar()
         
         # Define color scheme
         self.bg_color = "#1e1e2e"  # Dark blue-purple background
@@ -180,9 +187,119 @@ class LightningEXE:
         options_frame = ttk.Frame(main_notebook, padding=15)
         main_notebook.add(options_frame, text=" Build Options ")
         
-        # ===== ENVIRONMENT VARIABLES SECTION =====
-        env_vars_frame = ttk.Frame(main_notebook, padding=15)
-        main_notebook.add(env_vars_frame, text=" Environment Variables ")
+        # ===== ADVANCED OPTIONS SECTION =====
+        advanced_frame = ttk.Frame(main_notebook, padding=15)
+        main_notebook.add(advanced_frame, text=" Advanced ")
+        
+        # Create a notebook inside the advanced tab for sub-sections
+        advanced_notebook = ttk.Notebook(advanced_frame)
+        advanced_notebook.pack(fill=tk.BOTH, expand=True)
+        
+        # ===== ENVIRONMENT VARIABLES SECTION (now in Advanced tab) =====
+        env_vars_frame = ttk.Frame(advanced_notebook, padding=15)
+        advanced_notebook.add(env_vars_frame, text=" Environment Variables ")
+        
+        # ===== COMMAND LINE ARGUMENTS SECTION =====
+        cmd_args_frame = ttk.Frame(advanced_notebook, padding=15)
+        advanced_notebook.add(cmd_args_frame, text=" Command Line Arguments ")
+        
+        # Command Line Arguments explanation
+        cmd_args_label = ttk.Label(cmd_args_frame, 
+                               text="Add command-line arguments that will be passed to your script:", 
+                               font=("Segoe UI", 10))
+        cmd_args_label.pack(anchor=tk.W, pady=(0, 10))
+        
+        cmd_hint = ttk.Label(cmd_args_frame, 
+                           text="For scripts that require arguments (e.g. 'python main.py add 5 3'), add them here.",
+                           foreground=self.accent2_color, font=("Segoe UI", 9))
+        cmd_hint.pack(anchor=tk.W, pady=(0, 15))
+        
+        # Example box
+        example_frame = ttk.LabelFrame(cmd_args_frame, text="Example", padding=10)
+        example_frame.pack(fill=tk.X, pady=(0, 15))
+        
+        example_text = (
+            "# For a script with command:", 
+            "python main.py add 5 3", 
+            "", 
+            "# Enter in the field below:", 
+            "add 5 3"
+        )
+        
+        for line in example_text:
+            ttk.Label(example_frame, text=line, font=("Consolas", 9)).pack(anchor=tk.W)
+        
+        # Command arguments entry
+        args_entry_frame = ttk.Frame(cmd_args_frame)
+        args_entry_frame.pack(fill=tk.X, pady=10)
+        
+        ttk.Label(args_entry_frame, text="Command Arguments:").pack(anchor=tk.W, pady=(0, 5))
+        
+        self.cmd_args_var = tk.StringVar()
+        cmd_args_entry = ttk.Entry(args_entry_frame, textvariable=self.cmd_args_var, width=60)
+        cmd_args_entry.pack(fill=tk.X, pady=5)
+        
+        # Note about how arguments are used
+        note_frame = ttk.Frame(cmd_args_frame)
+        note_frame.pack(fill=tk.X, pady=10)
+        
+        note_label = ttk.Label(
+            note_frame,
+            text="Note: Arguments will be passed to the script when the executable is run.",
+            font=("Segoe UI", 9, "italic")
+        )
+        note_label.pack(anchor=tk.W)
+        
+        # ===== EXTRA PACKAGES SECTION =====
+        packages_frame = ttk.Frame(advanced_notebook, padding=15)
+        advanced_notebook.add(packages_frame, text=" Extra Packages ")
+        
+        # Extra Packages explanation
+        packages_label = ttk.Label(packages_frame, 
+                               text="Specify additional packages to include in your executable:", 
+                               font=("Segoe UI", 10))
+        packages_label.pack(anchor=tk.W, pady=(0, 10))
+        
+        pkg_hint = ttk.Label(packages_frame, 
+                           text="List packages separated by commas (e.g., 'pandas,numpy,matplotlib').",
+                           foreground=self.accent2_color, font=("Segoe UI", 9))
+        pkg_hint.pack(anchor=tk.W, pady=(0, 15))
+        
+        # Example box
+        pkg_example_frame = ttk.LabelFrame(packages_frame, text="Example", padding=10)
+        pkg_example_frame.pack(fill=tk.X, pady=(0, 15))
+        
+        pkg_example_text = (
+            "# Common data science packages:", 
+            "pandas,numpy,matplotlib,scipy", 
+            "", 
+            "# Common web packages:", 
+            "flask,requests,beautifulsoup4"
+        )
+        
+        for line in pkg_example_text:
+            ttk.Label(pkg_example_frame, text=line, font=("Consolas", 9)).pack(anchor=tk.W)
+        
+        # Extra packages entry
+        packages_entry_frame = ttk.Frame(packages_frame)
+        packages_entry_frame.pack(fill=tk.X, pady=10)
+        
+        ttk.Label(packages_entry_frame, text="Extra Packages:").pack(anchor=tk.W, pady=(0, 5))
+        
+        self.extra_packages_var = tk.StringVar()
+        packages_entry = ttk.Entry(packages_entry_frame, textvariable=self.extra_packages_var, width=60)
+        packages_entry.pack(fill=tk.X, pady=5)
+        
+        # Note about how packages are used
+        pkg_note_frame = ttk.Frame(packages_frame)
+        pkg_note_frame.pack(fill=tk.X, pady=10)
+        
+        pkg_note_label = ttk.Label(
+            pkg_note_frame,
+            text="Note: These packages will be explicitly included in your executable. Only add packages your app actually uses.",
+            font=("Segoe UI", 9, "italic")
+        )
+        pkg_note_label.pack(anchor=tk.W)
         
         # Output directory
         output_dir_frame = ttk.LabelFrame(options_frame, text="Output Location", padding=10)
@@ -620,6 +737,9 @@ class LightningEXE:
         # Add console/no-console option
         if not self.console_var.get():
             cmd.append("--windowed")
+            
+        # Add hidden imports for required modules
+        cmd.extend(["--hidden-import", "dotenv"])
         
         # Add environment variables if defined
         if self.env_vars:
@@ -659,8 +779,24 @@ class LightningEXE:
             # Inject import into the source file or its directory
             self.inject_env_vars_import(source_file)
         
-        # Add source file
-        cmd.append(source_file)
+        # Check if we have command line arguments
+        if self.cmd_args_var.get().strip():
+            # Create a wrapper script to handle command line arguments
+            wrapper_path = cmd_args_helper.create_wrapper_script(
+                source_file, 
+                self.cmd_args_var.get().strip()
+            )
+            
+            # Use wrapper as the entry point
+            cmd.append(wrapper_path)
+            
+            # Add original script directory to PyInstaller's path so imports work
+            cmd.extend(["--paths", os.path.dirname(source_file)])
+            
+            self.update_status(f"Using command-line arguments: {self.cmd_args_var.get().strip()}", "info")
+        else:
+            # Add source file directly if no command-line arguments
+            cmd.append(source_file)
         
         # Execute PyInstaller
         self.update_status("Running PyInstaller...", "info")
@@ -750,6 +886,17 @@ class LightningEXE:
             except subprocess.CalledProcessError:
                 raise Exception("Failed to install PyInstaller")
         
+        # Make sure python-dotenv is installed if we're using env vars
+        if self.env_vars:
+            try:
+                subprocess.run([sys.executable, "-c", "import dotenv"], check=True, capture_output=True)
+            except subprocess.CalledProcessError:
+                self.update_status("Installing python-dotenv...", "info")
+                try:
+                    subprocess.run([sys.executable, "-m", "pip", "install", "python-dotenv"], check=True)
+                except subprocess.CalledProcessError:
+                    raise Exception("Failed to install python-dotenv")
+        
         # Prepare PyInstaller command
         cmd = [
             sys.executable, "-m", "PyInstaller",
@@ -767,6 +914,120 @@ class LightningEXE:
         # Add console/no-console option
         if not self.console_var.get():
             cmd.append("--windowed")
+            
+        # Add hidden imports for dotenv
+        cmd.extend(["--hidden-import", "dotenv"])
+        
+        # Try to analyze the script for imports
+        try:
+            with open(source_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+                
+            # Simple regex to find imports
+            import re
+            import_patterns = [
+                r'^\s*import\s+([\w\.]+)',                  # import module
+                r'^\s*from\s+([\w\.]+)\s+import',          # from module import
+                r'^\s*import\s+([\w\.]+)\s+as'             # import module as
+            ]
+            
+            detected_imports = set()
+            for pattern in import_patterns:
+                matches = re.findall(pattern, content, re.MULTILINE)
+                detected_imports.update(matches)
+            
+            # Add detected imports
+            for module in detected_imports:
+                if not any(builtin in module for builtin in ['os', 'sys', 're', 'time', 'datetime', 'math']):
+                    cmd.extend(["--hidden-import", module])
+            
+            self.update_status(f"Auto-detected {len(detected_imports)} imports", "info")
+        except Exception as e:
+            # Don't fail the build if analysis fails
+            self.update_status(f"Import analysis failed: {str(e)}", "warning")
+        
+        # Add common libraries that PyInstaller often misses
+        common_libs = [
+            # Data science and analysis
+            "pandas", "pandas._libs.tslibs", "numpy", 
+            "matplotlib", "matplotlib.backends.backend_tkagg",
+            "scipy", "sklearn", "seaborn", "plotly", "statsmodels",
+            
+            # Image processing
+            "PIL", "PIL._tkinter_finder", "Pillow",
+            
+            # Excel handling
+            "openpyxl", "xlrd", "xlsxwriter",
+            
+            # Web and networking
+            "requests", "urllib3", "bs4", "flask", "django",
+            
+            # GUI
+            "tkinter", "PyQt5", "PySide2", "pygame",
+            
+            # Database
+            "sqlite3", "sqlalchemy", "pymongo",
+            
+            # Other common modules
+            "cryptography", "pytz", "yaml", "json", "csv"
+        ]
+        
+        # Add only if they're likely being used (based on file size - larger files more likely to have dependencies)
+        file_size = os.path.getsize(source_file)
+        if file_size > 5000:  # If file is larger than 5KB, likely has external dependencies
+            for lib in common_libs:
+                cmd.extend(["--hidden-import", lib])
+                
+        # Add user-specified extra packages
+        if self.extra_packages_var.get().strip():
+            self.update_status("Adding user-specified packages...", "info")
+            extra_packages = [pkg.strip() for pkg in self.extra_packages_var.get().split(",") if pkg.strip()]
+            
+            # Create a PyInstaller hook to ensure packages are properly included
+            hook_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hooks")
+            os.makedirs(hook_dir, exist_ok=True)
+            
+            hook_content = """# PyInstaller hook to include necessary modules
+from PyInstaller.utils.hooks import collect_all
+
+# Ensure all specified packages are included
+"""
+            
+            # Add dynamic import collection for each package
+            for package in extra_packages:
+                hook_content += f'''
+# Include {package} and all its dependencies
+try:
+    datas, binaries, hiddenimports = collect_all("{package}")
+    __all__ = ["datas", "binaries", "hiddenimports"]
+except Exception:
+    pass
+'''
+            
+            # Write the hook file
+            hook_path = os.path.join(hook_dir, "hook-user_packages.py")
+            with open(hook_path, "w") as hook_file:
+                hook_file.write(hook_content)
+            
+            # Add the hook directory to PyInstaller command
+            cmd.extend(["--additional-hooks-dir", hook_dir])
+            
+            # Still add explicit hidden imports for reliability
+            for package in extra_packages:
+                cmd.extend(["--hidden-import", package])
+                
+            # Special handling for packages that need extra modules
+            if "pandas" in extra_packages:
+                cmd.extend(["--hidden-import", "pandas._libs.tslibs"])
+                cmd.extend(["--hidden-import", "pandas.core.arrays"])
+                
+            if "matplotlib" in extra_packages:
+                cmd.extend(["--hidden-import", "matplotlib.backends.backend_tkagg"])
+                cmd.extend(["--hidden-import", "matplotlib.pyplot"])
+                
+            if "numpy" in extra_packages:
+                cmd.extend(["--hidden-import", "numpy.core._methods"])
+                cmd.extend(["--hidden-import", "numpy.lib.format"])
             
         # Add environment variables if defined
         if self.env_vars:
@@ -811,9 +1072,25 @@ class LightningEXE:
                 
             # Inject import into the source file or its directory
             self.inject_env_vars_import(source_file)
-        
-        # Add source file
-        cmd.append(source_file)
+            
+        # Check if we have command line arguments
+        if self.cmd_args_var.get().strip():
+            # Create a wrapper script to handle command line arguments
+            wrapper_path = cmd_args_helper.create_wrapper_script(
+                source_file, 
+                self.cmd_args_var.get().strip()
+            )
+            
+            # Use wrapper as the entry point
+            cmd.append(wrapper_path)
+            
+            # Add original script directory to PyInstaller's path so imports work
+            cmd.extend(["--paths", os.path.dirname(source_file)])
+            
+            self.update_status(f"Using command-line arguments: {self.cmd_args_var.get().strip()}", "info")
+        else:
+            # Add source file directly if no command-line arguments
+            cmd.append(source_file)
         
         # Execute PyInstaller
         self.update_status("Running PyInstaller...", "info")
