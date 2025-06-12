@@ -10,6 +10,8 @@ import requests
 import zipfile
 import re
 from pull_repo import clone_github_repo
+import sys
+import venv
 
 class LightningEXE:
     def __init__(self, root):
@@ -588,6 +590,8 @@ class LightningEXE:
             # Create a temporary directory for processing
             self.update_status("Preparing build environment...", "info")
             temp_dir = tempfile.mkdtemp()
+            venv_dir = None
+            venv_python = sys.executable  # Default to current python
             
             try:
                 # Process based on input type
@@ -595,27 +599,53 @@ class LightningEXE:
                     # For single file, we can directly use it
                     self.update_status("Using single Python file as source...", "info")
                     source_file = path
-                    
+                    project_dir = os.path.dirname(path)
                 elif input_type == "folder":
                     # For folder, copy the contents to the temp directory
                     self.update_status("Copying project files...", "info")
                     self.copy_directory(path, temp_dir)
                     source_file = os.path.join(temp_dir, main_file)
+                    project_dir = temp_dir
                     self.update_status(f"Project files copied. Using '{main_file}' as entry point.", "info")
-                    
                 elif input_type == "github":
                     # For GitHub, clone the repository
                     self.update_status("Connecting to GitHub...", "info")
                     repo_dir = self.download_github_repo(path, temp_dir)
                     if not repo_dir or not os.path.exists(repo_dir):
                         raise Exception("Failed to clone GitHub repository")
-                    
                     self.update_status(f"GitHub repository cloned successfully. Using '{main_file}' as entry point.", "info")
                     source_file = os.path.join(repo_dir, main_file)
+                    project_dir = repo_dir
                 
-                # Run PyInstaller
+                # --- NEW LOGIC: Use requirements.txt if present ---
+                requirements_path = os.path.join(project_dir, "requirements.txt")
+                if os.path.isfile(requirements_path):
+                    self.update_status("requirements.txt found. Creating virtual environment and installing dependencies...", "info")
+                    venv_dir = os.path.join(temp_dir, "venv_build")
+                    venv.create(venv_dir, with_pip=True)
+                    if sys.platform.startswith("win"):
+                        venv_python = os.path.join(venv_dir, "Scripts", "python.exe")
+                    else:
+                        venv_python = os.path.join(venv_dir, "bin", "python")
+                    # Install requirements
+                    pip_cmd = [venv_python, "-m", "pip", "install", "-r", requirements_path]
+                    proc = subprocess.run(pip_cmd, capture_output=True, text=True)
+                    if proc.returncode != 0:
+                        raise Exception(f"Failed to install requirements:\n{proc.stdout}\n{proc.stderr}")
+                    self.update_status("Dependencies installed in build environment.", "info")
+                    # Always install pyinstaller in the venv
+                    self.update_status("Installing PyInstaller in build environment...", "info")
+                    pip_pyinstaller = [venv_python, "-m", "pip", "install", "pyinstaller"]
+                    proc2 = subprocess.run(pip_pyinstaller, capture_output=True, text=True)
+                    if proc2.returncode != 0:
+                        raise Exception(f"Failed to install PyInstaller in build venv:\n{proc2.stdout}\n{proc2.stderr}")
+                    self.update_status("PyInstaller installed in build environment.", "info")
+                else:
+                    self.update_status("No requirements.txt found in project. Using system environment.", "warning")
+                
+                # Run PyInstaller using the venv's python if venv was created
                 self.update_status("Starting PyInstaller build process...", "info")
-                self.run_pyinstaller(source_file, output_dir)
+                self.run_pyinstaller(source_file, output_dir, python_exe=venv_python)
                 
                 # Build completed successfully
                 self.update_status("Build completed successfully!", "success")
@@ -639,12 +669,10 @@ class LightningEXE:
                     shutil.rmtree(temp_dir)
                 except Exception:
                     pass
-        
         except Exception as e:
             error_msg = str(e)
             self.update_status(f"Error: {error_msg}", "error")
             messagebox.showerror("Error", f"Failed to build executable:\n\n{error_msg}")
-        
         finally:
             # Re-enable the build button and stop progress
             self.root.after(0, lambda: self.build_button.configure(state="normal"))
@@ -700,29 +728,29 @@ class LightningEXE:
         except Exception as e:
             raise Exception(f"Error cloning GitHub repository: {str(e)}")
     
-    def run_pyinstaller(self, source_file, output_dir):
+    def run_pyinstaller(self, source_file, output_dir, python_exe=None):
         """Run PyInstaller to create an executable"""
+        if python_exe is None:
+            python_exe = sys.executable
         # Check if PyInstaller is already installed and available
         try:
-            # Check if PyInstaller is already installed by running a simple version check
             version_check = subprocess.run(
-                [sys.executable, "-m", "PyInstaller", "--version"],
+                [python_exe, "-m", "PyInstaller", "--version"],
                 capture_output=True,
                 text=True,
                 timeout=10
             )
             self.update_status(f"Found PyInstaller version: {version_check.stdout.strip()}")
         except (subprocess.SubprocessError, FileNotFoundError):
-            # If PyInstaller is not installed or the check fails, try to install it
             self.update_status("Installing PyInstaller...", "info")
             try:
-                subprocess.run([sys.executable, "-m", "pip", "install", "pyinstaller"], check=True)
+                subprocess.run([python_exe, "-m", "pip", "install", "pyinstaller"], check=True)
             except subprocess.CalledProcessError:
                 raise Exception("Failed to install PyInstaller")
         
         # Prepare PyInstaller command
         cmd = [
-            sys.executable, "-m", "PyInstaller",
+            python_exe, "-m", "PyInstaller",
             "--distpath", output_dir,
             "--workpath", os.path.join(output_dir, "build"),
             "--specpath", output_dir
@@ -822,303 +850,6 @@ class LightningEXE:
         except Exception as e:
             raise Exception(f"Error running PyInstaller: {str(e)}")
     
-    def update_status(self, message, status_type="info"):
-        """Update the status bar with message and appropriate styling
-            
-        Args:
-            message: The status message to display
-            status_type: One of 'info', 'success', 'warning', 'error'
-        """
-        def _update():
-            # Set message text
-            self.status_var.set(message)
-                
-            # Set appropriate icon and color based on status_type
-            status_icon = status_frame.winfo_children()[0]
-            if status_type == "info":
-                status_icon.configure(text="ℹ️", foreground=self.accent2_color)
-            elif status_type == "success":
-                status_icon.configure(text="✅", foreground=self.success_color)
-            elif status_type == "warning":
-                status_icon.configure(text="⚠️", foreground=self.highlight_color)
-            elif status_type == "error":
-                status_icon.configure(text="❌", foreground=self.highlight_color)
-        
-        # Schedule the update on the main thread
-        status_frame = self.progress.master.winfo_children()[1]
-        self.root.after(0, _update)
-    
-    def copy_directory(self, src, dst):
-        """Copy the contents of src directory to dst directory"""
-        for item in os.listdir(src):
-            s = os.path.join(src, item)
-            d = os.path.join(dst, item)
-            if os.path.isdir(s):
-                os.makedirs(d, exist_ok=True)
-                self.copy_directory(s, d)
-            else:
-                shutil.copy2(s, d)
-    
-    def download_github_repo(self, github_url, dest_dir):
-        """Clone a GitHub repository using git"""
-        try:
-            # Create a subdirectory for the repository
-            repo_dir = os.path.join(dest_dir, "repo")
-            
-            # Call the clone_github_repo function from pull_repo.py
-            clone_github_repo(github_url, repo_dir)
-                
-            return repo_dir
-        except Exception as e:
-            raise Exception(f"Error cloning GitHub repository: {str(e)}")
-    
-    def run_pyinstaller(self, source_file, output_dir):
-        """Run PyInstaller to create an executable"""
-        # Check if PyInstaller is already installed
-        try:
-            # Use proper capitalization for module name
-            subprocess.run([sys.executable, "-c", "import PyInstaller"], check=True, capture_output=True)
-        except subprocess.CalledProcessError:
-            # If not installed, install it
-            self.update_status("Installing PyInstaller...", "info")
-            try:
-                subprocess.run([sys.executable, "-m", "pip", "install", "pyinstaller"], check=True)
-            except subprocess.CalledProcessError:
-                raise Exception("Failed to install PyInstaller")
-        
-        # Make sure python-dotenv is installed if we're using env vars
-        if self.env_vars:
-            try:
-                subprocess.run([sys.executable, "-c", "import dotenv"], check=True, capture_output=True)
-            except subprocess.CalledProcessError:
-                self.update_status("Installing python-dotenv...", "info")
-                try:
-                    subprocess.run([sys.executable, "-m", "pip", "install", "python-dotenv"], check=True)
-                except subprocess.CalledProcessError:
-                    raise Exception("Failed to install python-dotenv")
-        
-        # Prepare PyInstaller command
-        cmd = [
-            sys.executable, "-m", "PyInstaller",
-            "--distpath", output_dir,
-            "--workpath", os.path.join(output_dir, "build"),
-            "--specpath", output_dir
-        ]
-            
-        # Add onefile/onedir option
-        if self.onefile_var.get():
-            cmd.append("--onefile")
-        else:
-            cmd.append("--onedir")
-            
-        # Add console/no-console option
-        if not self.console_var.get():
-            cmd.append("--windowed")
-            
-        # Add hidden imports for dotenv
-        cmd.extend(["--hidden-import", "dotenv"])
-        
-        # Try to analyze the script for imports
-        try:
-            with open(source_file, 'r', encoding='utf-8') as f:
-                content = f.read()
-                
-            # Simple regex to find imports
-            import re
-            import_patterns = [
-                r'^\s*import\s+([\w\.]+)',                  # import module
-                r'^\s*from\s+([\w\.]+)\s+import',          # from module import
-                r'^\s*import\s+([\w\.]+)\s+as'             # import module as
-            ]
-            
-            detected_imports = set()
-            for pattern in import_patterns:
-                matches = re.findall(pattern, content, re.MULTILINE)
-                detected_imports.update(matches)
-            
-            # Add detected imports
-            for module in detected_imports:
-                if not any(builtin in module for builtin in ['os', 'sys', 're', 'time', 'datetime', 'math']):
-                    cmd.extend(["--hidden-import", module])
-            
-            self.update_status(f"Auto-detected {len(detected_imports)} imports", "info")
-        except Exception as e:
-            # Don't fail the build if analysis fails
-            self.update_status(f"Import analysis failed: {str(e)}", "warning")
-        
-        # Add common libraries that PyInstaller often misses
-        common_libs = [
-            # Data science and analysis
-            "pandas", "pandas._libs.tslibs", "numpy", 
-            "matplotlib", "matplotlib.backends.backend_tkagg",
-            "scipy", "sklearn", "seaborn", "plotly", "statsmodels",
-            
-            # Image processing
-            "PIL", "PIL._tkinter_finder", "Pillow",
-            
-            # Excel handling
-            "openpyxl", "xlrd", "xlsxwriter",
-            
-            # Web and networking
-            "requests", "urllib3", "bs4", "flask", "django",
-            
-            # GUI
-            "tkinter", "PyQt5", "PySide2", "pygame",
-            
-            # Database
-            "sqlite3", "sqlalchemy", "pymongo",
-            
-            # Other common modules
-            "cryptography", "pytz", "yaml", "json", "csv"
-        ]
-        
-        # Add only if they're likely being used (based on file size - larger files more likely to have dependencies)
-        file_size = os.path.getsize(source_file)
-        if file_size > 5000:  # If file is larger than 5KB, likely has external dependencies
-            for lib in common_libs:
-                cmd.extend(["--hidden-import", lib])
-                
-        # Add user-specified extra packages
-        if self.extra_packages_var.get().strip():
-            self.update_status("Adding user-specified packages...", "info")
-            extra_packages = [pkg.strip() for pkg in self.extra_packages_var.get().split(",") if pkg.strip()]
-            
-            # Create a PyInstaller hook to ensure packages are properly included
-            hook_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hooks")
-            os.makedirs(hook_dir, exist_ok=True)
-            
-            hook_content = """# PyInstaller hook to include necessary modules
-from PyInstaller.utils.hooks import collect_all
-
-# Ensure all specified packages are included
-"""
-            
-            # Add dynamic import collection for each package
-            for package in extra_packages:
-                hook_content += f'''
-# Include {package} and all its dependencies
-try:
-    datas, binaries, hiddenimports = collect_all("{package}")
-    __all__ = ["datas", "binaries", "hiddenimports"]
-except Exception:
-    pass
-'''
-            
-            # Write the hook file
-            hook_path = os.path.join(hook_dir, "hook-user_packages.py")
-            with open(hook_path, "w") as hook_file:
-                hook_file.write(hook_content)
-            
-            # Add the hook directory to PyInstaller command
-            cmd.extend(["--additional-hooks-dir", hook_dir])
-            
-            # Still add explicit hidden imports for reliability
-            for package in extra_packages:
-                cmd.extend(["--hidden-import", package])
-                
-            # Special handling for packages that need extra modules
-            if "pandas" in extra_packages:
-                cmd.extend(["--hidden-import", "pandas._libs.tslibs"])
-                cmd.extend(["--hidden-import", "pandas.core.arrays"])
-                
-            if "matplotlib" in extra_packages:
-                cmd.extend(["--hidden-import", "matplotlib.backends.backend_tkagg"])
-                cmd.extend(["--hidden-import", "matplotlib.pyplot"])
-                
-            if "numpy" in extra_packages:
-                cmd.extend(["--hidden-import", "numpy.core._methods"])
-                cmd.extend(["--hidden-import", "numpy.lib.format"])
-            
-        # Add environment variables if defined
-        if self.env_vars:
-            # Use OS-specific separator for --add-data
-            separator = ";" if sys.platform.startswith("win") else ":"
-            
-            # Create a temporary env_vars.py file with the environment variables
-            env_vars_dir = os.path.dirname(source_file)
-            env_vars_path = os.path.join(env_vars_dir, "env_vars.py")
-            
-            # Generate environment variables dictionary string
-            env_vars_str = "{" + ", ".join([f"'{k}': '{v}'" for k, v in self.env_vars]) + "}"
-            
-            with open(env_vars_path, "w") as f:
-                f.write(f"# Environment variables for Lightning EXE\n")
-                f.write(f"# This file is automatically generated\n\n")
-                f.write(f"import os\n\n")
-                f.write(f"# Set environment variables\n")
-                f.write(f"_env_vars = {env_vars_str}\n\n")
-                f.write(f"def init_env_vars():\n")
-                f.write(f"    for key, value in _env_vars.items():\n")
-                f.write(f"        os.environ[key] = value\n\n")
-                f.write(f"# Initialize environment variables when imported\n")
-                f.write(f"init_env_vars()\n")
-            
-            # Add the env_vars.py file to the PyInstaller command
-            cmd.extend(["--add-data", f"env_vars.py{separator}."]) 
-            
-            # Create a hook for the application entry point to load environment variables
-            hook_dir = os.path.join(env_vars_dir, "hooks")
-            os.makedirs(hook_dir, exist_ok=True)
-            hook_path = os.path.join(hook_dir, "hook-env_vars.py")
-                
-            with open(hook_path, "w") as f:
-                f.write("# PyInstaller hook to ensure env_vars is imported\n")
-                f.write("from PyInstaller.utils.hooks import collect_data_files\n\n")
-                f.write("# Force env_vars module to be included\n")
-                f.write("hiddenimports = ['env_vars']\n")
-                
-            # Add hook path to PyInstaller command
-            cmd.extend(["--additional-hooks-dir", hook_dir])
-                
-            # Inject import into the source file or its directory
-            self.inject_env_vars_import(source_file)
-            
-        # Check if we have command line arguments
-        if self.cmd_args_var.get().strip():
-            # Create a wrapper script to handle command line arguments
-            wrapper_path = cmd_args_helper.create_wrapper_script(
-                source_file, 
-                self.cmd_args_var.get().strip()
-            )
-            
-            # Use wrapper as the entry point
-            cmd.append(wrapper_path)
-            
-            # Add original script directory to PyInstaller's path so imports work
-            cmd.extend(["--paths", os.path.dirname(source_file)])
-            
-            self.update_status(f"Using command-line arguments: {self.cmd_args_var.get().strip()}", "info")
-        else:
-            # Add source file directly if no command-line arguments
-            cmd.append(source_file)
-        
-        # Execute PyInstaller
-        self.update_status("Running PyInstaller...", "info")
-        try:
-            process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True
-            )
-                
-            # Set a timeout for the process
-            try:
-                stdout, _ = process.communicate(timeout=300)  # 5 minute timeout
-                    
-                if process.returncode != 0:
-                    raise Exception(f"PyInstaller failed with exit code {process.returncode}\n{stdout}")
-                    
-            except subprocess.TimeoutExpired:
-                process.kill()
-                raise Exception("PyInstaller process timed out after 5 minutes")
-                    
-        except Exception as e:
-            if "No module named 'PyInstaller'" in str(e):
-                raise Exception("PyInstaller is not installed correctly. Please install it manually: pip install pyinstaller")
-            else:
-                raise Exception(f"Error running PyInstaller: {str(e)}")
-
     def add_env_var(self):
         """Add a new environment variable to the list"""
         key = self.new_var_key.get().strip()
