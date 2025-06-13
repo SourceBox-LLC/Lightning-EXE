@@ -303,6 +303,24 @@ class LightningEXE:
         )
         pkg_note_label.pack(anchor=tk.W)
         
+        # ===== CUSTOM LAUNCH COMMAND SECTION =====
+        custom_cmd_frame = ttk.Frame(advanced_notebook, padding=15)
+        advanced_notebook.add(custom_cmd_frame, text=" Custom Launch Command ")
+
+        custom_cmd_label = ttk.Label(custom_cmd_frame, 
+            text="Custom Launch Command (optional):", 
+            font=("Segoe UI", 10))
+        custom_cmd_label.pack(anchor=tk.W, pady=(0, 10))
+
+        custom_cmd_hint = ttk.Label(custom_cmd_frame, 
+            text="If provided, this command will be used to launch your app (e.g., 'uvicorn main:app --reload', 'streamlit run app.py'). Leave blank to use the default.",
+            foreground=self.accent2_color, font=("Segoe UI", 9))
+        custom_cmd_hint.pack(anchor=tk.W, pady=(0, 10))
+
+        self.custom_cmd_var = tk.StringVar()
+        custom_cmd_entry = ttk.Entry(custom_cmd_frame, textvariable=self.custom_cmd_var, width=60)
+        custom_cmd_entry.pack(fill=tk.X, pady=5)
+        
         # Output directory
         output_dir_frame = ttk.LabelFrame(options_frame, text="Output Location", padding=10)
         output_dir_frame.pack(fill=tk.X, pady=(5, 15))
@@ -582,10 +600,55 @@ class LightningEXE:
     
     def run_build_process(self):
         try:
+            import sys
+            import venv
             input_type = self.input_type.get()
             path = self.path_var.get().strip()
             output_dir = self.output_dir_var.get().strip()
             main_file = self.main_file_var.get().strip()
+            custom_cmd = self.custom_cmd_var.get().strip()
+
+            # --- Automated Detection for FastAPI/Streamlit ---
+            detected_special = False
+            detected_framework = None
+            # Check custom command
+            if custom_cmd:
+                if 'uvicorn' in custom_cmd.lower():
+                    detected_special = True
+                    detected_framework = 'FastAPI/Uvicorn'
+                elif 'streamlit' in custom_cmd.lower():
+                    detected_special = True
+                    detected_framework = 'Streamlit'
+            # Check requirements.txt if present
+            project_dir = None
+            if input_type == "file":
+                project_dir = os.path.dirname(path)
+            elif input_type == "folder":
+                project_dir = path
+            elif input_type == "github":
+                # Will be set after cloning
+                pass
+            requirements_path = None
+            if project_dir:
+                requirements_path = os.path.join(project_dir, "requirements.txt")
+                if os.path.isfile(requirements_path):
+                    with open(requirements_path, "r", encoding="utf-8") as reqf:
+                        reqs = reqf.read().lower()
+                        if 'uvicorn' in reqs and not detected_special:
+                            detected_special = True
+                            detected_framework = 'FastAPI/Uvicorn'
+                        elif 'streamlit' in reqs and not detected_special:
+                            detected_special = True
+                            detected_framework = 'Streamlit'
+            # Show warning if detected
+            if detected_special:
+                messagebox.showwarning(
+                    f"{detected_framework} Packaging Notice",
+                    f"It looks like you are building a {detected_framework} app.\n\n"
+                    "These frameworks may require special handling when packaged as an EXE. "
+                    "If you see import errors or the app does not start as expected, please consult the Lightning EXE troubleshooting guide for FastAPI/Streamlit.\n\n"
+                    "(This is a limitation of how Python packaging tools work with dynamic web frameworks.)"
+                )
             
             # Create a temporary directory for processing
             self.update_status("Preparing build environment...", "info")
@@ -645,7 +708,7 @@ class LightningEXE:
                 
                 # Run PyInstaller using the venv's python if venv was created
                 self.update_status("Starting PyInstaller build process...", "info")
-                self.run_pyinstaller(source_file, output_dir, python_exe=venv_python)
+                self.run_pyinstaller(source_file, output_dir, python_exe=venv_python, custom_cmd=custom_cmd)
                 
                 # Build completed successfully
                 self.update_status("Build completed successfully!", "success")
@@ -728,10 +791,12 @@ class LightningEXE:
         except Exception as e:
             raise Exception(f"Error cloning GitHub repository: {str(e)}")
     
-    def run_pyinstaller(self, source_file, output_dir, python_exe=None):
+    def run_pyinstaller(self, source_file, output_dir, python_exe=None, custom_cmd=None):
         """Run PyInstaller to create an executable"""
         if python_exe is None:
             python_exe = sys.executable
+        if custom_cmd is None:
+            custom_cmd = ""
         # Check if PyInstaller is already installed and available
         try:
             version_check = subprocess.run(
@@ -807,8 +872,15 @@ class LightningEXE:
             # Inject import into the source file or its directory
             self.inject_env_vars_import(source_file)
         
-        # Check if we have command line arguments
-        if self.cmd_args_var.get().strip():
+        # Check if we have a custom launch command
+        if custom_cmd:
+            # Create a wrapper script to run the custom command
+            wrapper_path = self.create_custom_cmd_wrapper(source_file, custom_cmd)
+            cmd.append(wrapper_path)
+            # Add original script directory to PyInstaller's path so imports work
+            cmd.extend(["--paths", os.path.dirname(source_file)])
+            self.update_status(f"Using custom launch command: {custom_cmd}", "info")
+        elif self.cmd_args_var.get().strip():
             # Create a wrapper script to handle command line arguments
             wrapper_path = cmd_args_helper.create_wrapper_script(
                 source_file, 
@@ -938,6 +1010,22 @@ class LightningEXE:
                 f.write("    import env_vars\n")
                 f.write("except ImportError:\n")
                 f.write("    pass\n")
+
+    def create_custom_cmd_wrapper(self, source_file, custom_cmd):
+        """Create a wrapper script that runs the custom command using subprocess"""
+        import shlex
+        wrapper_dir = os.path.dirname(source_file)
+        wrapper_path = os.path.join(wrapper_dir, "_lightning_exe_custom_cmd_wrapper.py")
+        with open(wrapper_path, "w") as f:
+            f.write("# Wrapper script created by Lightning EXE to run a custom launch command\n")
+            f.write("import subprocess\n")
+            f.write("import sys\n")
+            f.write("import os\n\n")
+            # Use shlex.split for safe argument parsing
+            f.write(f"cmd = {shlex.split(custom_cmd)!r}\n")
+            f.write("proc = subprocess.run(cmd)\n")
+            f.write("sys.exit(proc.returncode)\n")
+        return wrapper_path
 
 
 if __name__ == "__main__":
