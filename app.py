@@ -321,6 +321,24 @@ class LightningEXE:
         custom_cmd_entry = ttk.Entry(custom_cmd_frame, textvariable=self.custom_cmd_var, width=60)
         custom_cmd_entry.pack(fill=tk.X, pady=5)
         
+        # ===== EXPERIMENTAL MODE SECTION =====
+        experimental_frame = ttk.Frame(advanced_notebook, padding=15)
+        advanced_notebook.add(experimental_frame, text=" Experimental Mode ")
+
+        self.experimental_mode_var = tk.BooleanVar(value=False)
+        experimental_check = ttk.Checkbutton(
+            experimental_frame,
+            text="Enable Experimental Web App Compatibility (FastAPI/Streamlit)",
+            variable=self.experimental_mode_var
+        )
+        experimental_check.pack(anchor=tk.W, pady=(0, 10))
+        experimental_hint = ttk.Label(
+            experimental_frame,
+            text="If enabled, Lightning EXE will attempt to patch the environment for web frameworks. This is experimental and may not work for all apps.",
+            foreground=self.accent2_color, font=("Segoe UI", 9)
+        )
+        experimental_hint.pack(anchor=tk.W, pady=(0, 10))
+        
         # Output directory
         output_dir_frame = ttk.LabelFrame(options_frame, text="Output Location", padding=10)
         output_dir_frame.pack(fill=tk.X, pady=(5, 15))
@@ -607,6 +625,7 @@ class LightningEXE:
             output_dir = self.output_dir_var.get().strip()
             main_file = self.main_file_var.get().strip()
             custom_cmd = self.custom_cmd_var.get().strip()
+            experimental_mode = self.experimental_mode_var.get()
 
             # --- Automated Detection for FastAPI/Streamlit ---
             detected_special = False
@@ -632,8 +651,14 @@ class LightningEXE:
             if project_dir:
                 requirements_path = os.path.join(project_dir, "requirements.txt")
                 if os.path.isfile(requirements_path):
-                    with open(requirements_path, "r", encoding="utf-8") as reqf:
-                        reqs = reqf.read().lower()
+                    reqs = None
+                    try:
+                        with open(requirements_path, "r", encoding="utf-8-sig") as reqf:
+                            reqs = reqf.read().lower()
+                    except UnicodeDecodeError:
+                        with open(requirements_path, "r", encoding="utf-16") as reqf:
+                            reqs = reqf.read().lower()
+                    if reqs:
                         if 'uvicorn' in reqs and not detected_special:
                             detected_special = True
                             detected_framework = 'FastAPI/Uvicorn'
@@ -649,6 +674,11 @@ class LightningEXE:
                     "If you see import errors or the app does not start as expected, please consult the Lightning EXE troubleshooting guide for FastAPI/Streamlit.\n\n"
                     "(This is a limitation of how Python packaging tools work with dynamic web frameworks.)"
                 )
+            
+            # Pass detection and experimental mode to run_pyinstaller
+            self.detected_special = detected_special
+            self.detected_framework = detected_framework
+            self.experimental_mode_enabled = experimental_mode
             
             # Create a temporary directory for processing
             self.update_status("Preparing build environment...", "info")
@@ -793,10 +823,14 @@ class LightningEXE:
     
     def run_pyinstaller(self, source_file, output_dir, python_exe=None, custom_cmd=None):
         """Run PyInstaller to create an executable"""
+        import sys
         if python_exe is None:
             python_exe = sys.executable
         if custom_cmd is None:
             custom_cmd = ""
+        detected_special = getattr(self, 'detected_special', False)
+        detected_framework = getattr(self, 'detected_framework', None)
+        experimental_mode = getattr(self, 'experimental_mode_enabled', False)
         # Check if PyInstaller is already installed and available
         try:
             version_check = subprocess.run(
@@ -874,12 +908,24 @@ class LightningEXE:
         
         # Check if we have a custom launch command
         if custom_cmd:
-            # Create a wrapper script to run the custom command
-            wrapper_path = self.create_custom_cmd_wrapper(source_file, custom_cmd)
-            cmd.append(wrapper_path)
-            # Add original script directory to PyInstaller's path so imports work
-            cmd.extend(["--paths", os.path.dirname(source_file)])
-            self.update_status(f"Using custom launch command: {custom_cmd}", "info")
+            # If experimental mode and special framework, patch the wrapper
+            if experimental_mode and detected_special:
+                # Special handling for Streamlit: generate a launcher script
+                if detected_framework and 'streamlit' in detected_framework.lower():
+                    launcher_path = self.create_streamlit_launcher(source_file)
+                    cmd.append(launcher_path)
+                    cmd.extend(["--paths", os.path.dirname(source_file)])
+                    self.update_status("Using auto-generated Streamlit launcher (experimental)", "info")
+                else:
+                    wrapper_path = self.create_custom_cmd_wrapper(source_file, custom_cmd, patch_env=True)
+                    cmd.append(wrapper_path)
+                    cmd.extend(["--paths", os.path.dirname(source_file)])
+                    self.update_status(f"Using custom launch command: {custom_cmd}", "info")
+            else:
+                wrapper_path = self.create_custom_cmd_wrapper(source_file, custom_cmd)
+                cmd.append(wrapper_path)
+                cmd.extend(["--paths", os.path.dirname(source_file)])
+                self.update_status(f"Using custom launch command: {custom_cmd}", "info")
         elif self.cmd_args_var.get().strip():
             # Create a wrapper script to handle command line arguments
             wrapper_path = cmd_args_helper.create_wrapper_script(
@@ -1011,8 +1057,8 @@ class LightningEXE:
                 f.write("except ImportError:\n")
                 f.write("    pass\n")
 
-    def create_custom_cmd_wrapper(self, source_file, custom_cmd):
-        """Create a wrapper script that runs the custom command using subprocess"""
+    def create_custom_cmd_wrapper(self, source_file, custom_cmd, patch_env=False):
+        """Create a wrapper script that runs the custom command using subprocess. If patch_env is True, patch sys.path and cwd for web frameworks."""
         import shlex
         wrapper_dir = os.path.dirname(source_file)
         wrapper_path = os.path.join(wrapper_dir, "_lightning_exe_custom_cmd_wrapper.py")
@@ -1021,11 +1067,34 @@ class LightningEXE:
             f.write("import subprocess\n")
             f.write("import sys\n")
             f.write("import os\n\n")
+            if patch_env:
+                f.write("# Experimental: Patch sys.path and working directory for web frameworks\n")
+                f.write("script_dir = os.path.dirname(os.path.abspath(__file__))\n")
+                f.write("os.chdir(script_dir)\n")
+                f.write("if script_dir not in sys.path:\n    sys.path.insert(0, script_dir)\n")
             # Use shlex.split for safe argument parsing
             f.write(f"cmd = {shlex.split(custom_cmd)!r}\n")
             f.write("proc = subprocess.run(cmd)\n")
             f.write("sys.exit(proc.returncode)\n")
         return wrapper_path
+
+    def create_streamlit_launcher(self, source_file):
+        """Create a launcher script for Streamlit that works with PyInstaller one-file mode."""
+        import os
+        launcher_dir = os.path.dirname(source_file)
+        app_basename = os.path.basename(source_file)
+        launcher_path = os.path.join(launcher_dir, "_lightning_exe_streamlit_launcher.py")
+        with open(launcher_path, "w") as f:
+            f.write("import os\n")
+            f.write("import sys\n")
+            f.write("import subprocess\n\n")
+            f.write("if getattr(sys, '_MEIPASS', None):\n")
+            f.write("    base_path = sys._MEIPASS\n")
+            f.write("    sys.path.insert(0, base_path)\n")
+            f.write("else:\n")
+            f.write("    base_path = os.path.abspath('.')\n")
+            f.write(f"subprocess.call(['streamlit', 'run', os.path.join(base_path, '{app_basename}')])\n")
+        return launcher_path
 
 
 if __name__ == "__main__":

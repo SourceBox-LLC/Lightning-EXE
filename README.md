@@ -81,11 +81,49 @@ Once you have configured the input and output options:
 
 If you encounter any issues, please refer to the messages displayed in the status area for guidance.
 
-## Contributing
-We welcome contributions! If you would like to contribute to Lightning EXE, please fork the repository, make your changes, and submit a pull request. Ensure that your code adheres to the existing style and includes relevant tests.
+---
 
-## License
-This project is licensed under the MIT License. See the LICENSE file for more details.
+## Packaging FastAPI and Streamlit Apps (Important Limitations)
+
+Lightning EXE aims to make any Python app instantly executable. However, some web frameworks (notably **FastAPI/Uvicorn** and **Streamlit**) use dynamic imports and subprocesses that are not always compatible with PyInstaller or similar tools.
+
+### What to Expect
+- **Most apps** (console, Tkinter, PyQt, Pygame, Flask, etc.) work out of the box.
+- **FastAPI and Streamlit apps** may require special handling and may not work with zero configuration.
+
+### What Lightning EXE Does
+- **Automated Detection:** If your project or custom command uses FastAPI/Uvicorn or Streamlit, Lightning EXE will warn you before building.
+- **Experimental Mode:** You can enable this in the Advanced tab. Lightning EXE will attempt to patch the environment to improve compatibility, but this may not work for all apps.
+
+### Known Issues
+- Running `uvicorn main:app` or `streamlit run app.py` in an EXE may result in errors like:
+  - `Error loading ASGI app. Could not import module "main".`
+- This is due to how PyInstaller bundles code and how these frameworks import your app.
+
+### Workarounds
+- **Recommended:** Use a programmatic entrypoint for FastAPI (requires a small code change):
+  ```python
+  import uvicorn
+  import main
+  if __name__ == "__main__":
+      uvicorn.run(main.app, host="127.0.0.1", port=8000)
+  ```
+  Set this script as your main file in Lightning EXE.
+- **Try One-Dir Mode:** Sometimes, building as a folder (not a single file) helps. You can select this in the build options.
+- **Experimental Mode:** Enable this in the Advanced tab to let Lightning EXE patch the environment. This is not guaranteed to work for all web apps.
+
+### Summary Table
+| Framework/Command         | Works with EXE? | Notes/Workaround                |
+|--------------------------|-----------------|---------------------------------|
+| Console/Tkinter/PyQt/etc | ✅              | Works out of the box            |
+| Flask                    | ✅              | Works out of the box            |
+| FastAPI (`uvicorn main:app`) | ❌          | Use programmatic entrypoint     |
+| Streamlit (`streamlit run app.py`) | ❌   | Experimental, may need tweaks   |
+
+### Why This Happens
+These frameworks use dynamic imports and subprocesses that expect a normal Python environment. PyInstaller bundles code in a way that can break these assumptions. This is a limitation of Python packaging tools, not Lightning EXE specifically.
+
+For more details and troubleshooting, see the [Lightning EXE Troubleshooting Guide](#) (coming soon).
 
 ---
 
